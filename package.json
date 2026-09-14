@@ -1,0 +1,53 @@
+{
+  "name": "pi-context-budget",
+  "version": "0.6.0",
+  "description": "Pi coding-agent extension that keeps long sessions inside the window a local model works best in: archives old thinking, stale tool outputs and large tool-call arguments as addressable snapshots, with no LLM calls and nothing paraphrased.",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zzerding/pi-context-budget-permodel.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "context-window",
+    "pruning",
+    "compaction",
+    "vllm"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=23"
+  },
+  "files": [
+    "archive.ts",
+    "budget.ts",
+    "compact.ts",
+    "config.ts",
+    "cut.ts",
+    "index.ts",
+    "messages.ts",
+    "pin.ts",
+    "plan.ts",
+    "reduce.ts",
+    "replay.ts",
+    "search-hitrate.ts",
+    "store.ts",
+    "summary.ts",
+    "tier.ts",
+    "tools.ts",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "context-budget.example.json"
+  ]
+}
