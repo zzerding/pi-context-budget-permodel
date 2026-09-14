@@ -8,6 +8,14 @@ const asCacheMode = (v: unknown): CacheMode | undefined => (CACHE_MODES.includes
 
 const isPositiveFinite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
 
+// The one optional block of its own in the config: the absolute thresholds a subagent process uses
+// instead of the global ones. Only the two threshold keys mean anything here; everything else in it
+// is ignored, and the block as a whole replaces rather than merges (see applySubagentThresholds).
+export interface SubagentThresholds {
+  maxPromptTokens?: number;
+  maxHardTokens?: number;
+}
+
 export interface Config {
   enabled: boolean;
   startAtFraction: number;      // do nothing below this fraction of the context window
@@ -34,11 +42,12 @@ export interface Config {
   squeeze: boolean;             // off by default: emergency elide down to targetFraction
   pin: boolean;                 // off by default: trailing session goal pin
   interceptCompact: boolean;    // on by default: replace Pi LLM compaction with a deterministic index
-  charsPerToken: number;
+  charsPerToken: number;        // scales the messages after the provider's anchor only; timing, not accuracy (anchor.ts)
   cacheMode: CacheMode;         // how often the elision boundary may move, so the prefix cache survives (plan.ts)
   cacheLagSteps: number;        // "lagged": allow the next advance this many assistant steps later
-  maxPromptTokens?: number;     // absolute start threshold in estimated tokens; wins over startAtFraction
-  maxHardTokens?: number;       // absolute high-water threshold in estimated tokens; wins over highWaterFraction
+  maxPromptTokens?: number;     // absolute start threshold in real tokens; wins over startAtFraction
+  maxHardTokens?: number;       // absolute high-water threshold in real tokens; wins over highWaterFraction
+  subagent?: SubagentThresholds; // replaces both absolute thresholds when Pi runs as a subagent (-p --no-session)
   modelOverrides?: Record<string, Partial<Config>>; // per "<provider>/<modelId>", merged field by field
 }
 
@@ -111,6 +120,17 @@ function acceptFields(raw: Record<string, unknown>): Partial<Config> {
   // and would otherwise survive as a threshold no prompt can ever reach.
   if (isPositiveFinite(raw.maxPromptTokens)) out.maxPromptTokens = raw.maxPromptTokens;
   if (isPositiveFinite(raw.maxHardTokens)) out.maxHardTokens = raw.maxHardTokens;
+  // The subagent block is validated by the same rule as the top-level thresholds above: a zero, a
+  // negative or a non-finite value is a typo, so it is dropped. A block from which neither threshold
+  // survives is dropped whole — a present-but-empty block would otherwise read as a deliberate
+  // "subagents get no thresholds", which no plausible config meant.
+  if (raw.subagent && typeof raw.subagent === "object" && !Array.isArray(raw.subagent)) {
+    const block = raw.subagent as Record<string, unknown>;
+    const kept: SubagentThresholds = {};
+    if (isPositiveFinite(block.maxPromptTokens)) kept.maxPromptTokens = block.maxPromptTokens;
+    if (isPositiveFinite(block.maxHardTokens)) kept.maxHardTokens = block.maxHardTokens;
+    if (kept.maxPromptTokens != null || kept.maxHardTokens != null) out.subagent = kept;
+  }
   // An override is "any provider/modelId" -> the keys that model overrides. A malformed entry is
   // dropped whole: a half-read override is worse than none, since the user cannot tell it was lost.
   if (raw.modelOverrides && typeof raw.modelOverrides === "object" && !Array.isArray(raw.modelOverrides)) {
@@ -162,4 +182,23 @@ export function modelRefOf(model: { provider?: string; id?: string } | undefined
 export function resolveConfigForModel(cfg: Config, modelRef: string | undefined): Config {
   const override = modelRef ? cfg.modelOverrides?.[modelRef] : undefined;
   return normalize(override ? { ...cfg, ...override } : cfg);
+}
+
+// Pi's subagent extension spawns workers as `--mode json -p --no-session --model …`; the main
+// session's argv never carries --no-session. The flag, not -p, is the marker: -p is how other
+// headless invocations run too, while --no-session says exactly what this branch cares about — a
+// process with no session to keep a plan state alive in, whose prompts are short-lived by nature.
+export function isSubagentArgv(argv: readonly string[]): boolean {
+  return argv.includes("--no-session");
+}
+
+// In a subagent process the `subagent` block replaces the two global absolute thresholds as a whole:
+// a field it leaves out is unset, not inherited — the thresholds the main session was tuned by are
+// exactly the ones a worker must not fall back to. modelOverrides and every fraction-based key are
+// untouched, and the ≥ context-window guard is the one budget.ts already applies at conversion time.
+// With no block, or outside a subagent process, the same config object is returned untouched.
+export function applySubagentThresholds(cfg: Config, argv: readonly string[]): Config {
+  const sub = isSubagentArgv(argv) ? cfg.subagent : undefined;
+  if (!sub) return cfg;
+  return { ...cfg, maxPromptTokens: sub.maxPromptTokens, maxHardTokens: sub.maxHardTokens };
 }

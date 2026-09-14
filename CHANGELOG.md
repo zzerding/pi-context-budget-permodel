@@ -25,6 +25,10 @@ Changed
   still scales the tail. The `modelOverrides` advice in the README is downgraded accordingly.
 - On an estimate with no anchor — a session's first request, or a log without usage — the accounting
   is unchanged: the full chars-based estimate plus the system-prompt overhead.
+- A subagent process (Pi spawns workers as `--mode json -p --no-session --model …`) now takes the
+  `subagent` block's absolute thresholds instead of the global `maxPromptTokens` / `maxHardTokens`,
+  replaced wholesale: a field the block leaves out is unset, not inherited. `modelOverrides` still
+  applies on top, and with no `subagent` block the behavior is exactly what it was.
 
 The residual error is a known, bounded bias rather than drift: a provider's `totalTokens` includes
 that turn's own completion, thinking included, and whether that thinking returns in the next prompt

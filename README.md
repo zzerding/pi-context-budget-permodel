@@ -269,6 +269,20 @@ or one at or above the whole context window, is dropped rather than kept: it
 could not fire, and a threshold that silently never fires is the hardest kind of
 misconfiguration to notice.
 
+A subagent process — Pi's subagent extension spawns workers as `--mode json -p
+--no-session --model …` — takes the `subagent` block's absolute thresholds
+instead of the global ones, replaced wholesale: a field the block leaves out is
+unset, not inherited. `modelOverrides` still applies on top of the replacement,
+and with no `subagent` block subagents use exactly what the main session uses:
+
+```json
+{
+  "maxPromptTokens": 40000,
+  "maxHardTokens": 80000,
+  "subagent": { "maxPromptTokens": 120000, "maxHardTokens": 200000 }
+}
+```
+
 `cacheMode` trades pruning for a smaller prefix-cache miss: `frozen` locks the
 boundary at the first move, `lagged` allows one every `cacheLagSteps` assistant
 steps. Both only ever move the boundary less often — no mode can relax a tier

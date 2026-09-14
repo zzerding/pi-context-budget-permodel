@@ -9,7 +9,7 @@ import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { budgetFor, type PiCompaction } from "./budget.ts";
 import { decideCompaction, type Preparation } from "./compact.ts";
-import { estimate, modelRefOf, resolveConfigForModel } from "./config.ts";
+import { applySubagentThresholds, estimate, modelRefOf, resolveConfigForModel } from "./config.ts";
 import type { Entry } from "./cut.ts";
 import { formatPin, seedScratch, stripPin } from "./pin.ts";
 import { plan, type PlanState, type Stats } from "./plan.ts";
@@ -34,7 +34,9 @@ const NOTE =
 const ARCHIVE_MAX_AGE_DAYS = 30;
 
 export default function (pi: ExtensionAPI) {
-  const cfg = loadConfig();
+  // Subagent workers (Pi spawns them as `… -p --no-session --model …`) take the `subagent` block's
+  // absolute thresholds instead of the main session's, at the one place the config is loaded.
+  const cfg = applySubagentThresholds(loadConfig(), process.argv);
   const states = new Map<string, PlanState>();
   let last: Stats | undefined;
   let lastSessionId: string | undefined;

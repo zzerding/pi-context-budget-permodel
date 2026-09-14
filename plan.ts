@@ -19,7 +19,7 @@ import { argText, estimateMessages, estimateTokens, getAt, indexMessages, latest
 import { currentSavings, gainAt, isReducible, leanCandidates, placeAt, savingsAt, sentFor, targetTier, type Host } from "./tier.ts";
 import { emptyScratch, type Scratch } from "./pin.ts";
 
-export { DEFAULTS, estimate, mergeConfig, modelRefOf, resolveConfigForModel, type CacheMode, type Config } from "./config.ts";
+export { DEFAULTS, applySubagentThresholds, estimate, isSubagentArgv, mergeConfig, modelRefOf, resolveConfigForModel, type CacheMode, type Config } from "./config.ts";
 export * from "./archive.ts";
 export * from "./budget.ts";
 export * from "./compact.ts";

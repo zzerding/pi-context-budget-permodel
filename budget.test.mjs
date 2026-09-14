@@ -10,6 +10,8 @@ import {
   deterministicSummary,
   isCutPoint,
   mergeConfig,
+  applySubagentThresholds,
+  isSubagentArgv,
   modelRefOf,
   newState,
   piCompactionFrom,
@@ -342,4 +344,55 @@ test("the model reference is read defensively: a stub without provider or id fal
   // and the fallback is the global config's values, not a throw on the request path
   const cfg = mergeConfig({ modelOverrides: { "local/qwen3.8": { startAtFraction: 0.055 } } });
   assert.deepEqual(resolveConfigForModel(cfg, modelRefOf({ id: "qwen3.8" })), cfg);
+});
+
+// The subagent extension spawns workers as `--mode json -p --no-session --model …` and the main
+// session's argv never carries --no-session, so the flag is the whole identification.
+test("a subagent process is identified by --no-session in the argv, not by -p", () => {
+  assert.equal(isSubagentArgv(["--mode", "json", "-p", "--no-session", "--model", "m"]), true);
+  assert.equal(isSubagentArgv(["--mode", "json", "--model", "m"]), false);
+  assert.equal(isSubagentArgv(["-p"]), false, "a plain headless run is not a subagent");
+  assert.equal(isSubagentArgv([]), false);
+});
+
+test("the subagent block replaces both absolute thresholds wholesale inside a subagent process", () => {
+  const cfg = mergeConfig({
+    maxPromptTokens: 40_000,
+    maxHardTokens: 80_000,
+    subagent: { maxPromptTokens: 120_000, maxHardTokens: 200_000 },
+    modelOverrides: { "local/qwen3.8": { maxPromptTokens: 9_000 } },
+  });
+  const argv = ["--mode", "json", "-p", "--no-session"];
+  const sub = applySubagentThresholds(cfg, argv);
+  assert.equal(sub.maxPromptTokens, 120_000);
+  assert.equal(sub.maxHardTokens, 200_000);
+  // Replacement, not a merge: a field the block leaves out is unset, never inherited from the global.
+  const partial = applySubagentThresholds(mergeConfig({ maxPromptTokens: 40_000, subagent: { maxHardTokens: 200_000 } }), argv);
+  assert.equal(partial.maxPromptTokens, undefined);
+  assert.equal(partial.maxHardTokens, 200_000);
+  // modelOverrides and every other key are untouched by the replacement.
+  assert.deepEqual(sub.modelOverrides, cfg.modelOverrides);
+  assert.equal(sub.squeeze, cfg.squeeze);
+  assert.equal(applySubagentThresholds(cfg, ["-p"]), cfg, "outside a subagent the config is passed through untouched");
+  assert.equal(applySubagentThresholds(cfg, []), cfg);
+});
+
+test("an unusable or empty subagent block is dropped, and subagent thresholds feed the fraction conversion", () => {
+  // Same rules as the top-level thresholds: zero, negative and non-finite values are typos, dropped.
+  const bad = mergeConfig({ subagent: { maxPromptTokens: 0, maxHardTokens: -5 } });
+  assert.equal(bad.subagent, undefined);
+  const infinite = mergeConfig({ subagent: { maxPromptTokens: 1e999 } });
+  assert.equal(infinite.subagent, undefined);
+  // A block from which nothing survives reads as absent, not as "subagents get no thresholds".
+  assert.equal(applySubagentThresholds(mergeConfig({ maxPromptTokens: 40_000, subagent: {} }), ["--no-session"]).maxPromptTokens, 40_000);
+
+  // And the replacement lands where every other threshold does: the fraction conversion in budget.ts.
+  // On a 262144 window, 120000/262144 ≈ 0.458 start, 200000/262144 ≈ 0.763 high water.
+  const cfg = mergeConfig({ subagent: { maxPromptTokens: 120_000, maxHardTokens: 200_000 } });
+  const b = budgetFor(applySubagentThresholds(cfg, ["-p", "--no-session"]), 262_144, pi());
+  assert.equal(b.cfg.startAtFraction, 120_000 / 262_144);
+  assert.equal(b.cfg.highWaterFraction, 200_000 / 262_144);
+  // A subagent threshold at or above the window is dropped by that same conversion, like any other.
+  const huge = budgetFor(applySubagentThresholds(mergeConfig({ subagent: { maxPromptTokens: 2e9 } }), ["--no-session"]), 262_144, pi());
+  assert.equal(huge.cfg.startAtFraction, DEFAULTS.startAtFraction);
 });
