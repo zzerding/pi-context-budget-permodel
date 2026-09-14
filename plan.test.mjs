@@ -13,6 +13,8 @@ import {
   headTail,
   isPinMessage,
   mergeConfig,
+  estimateMessages,
+  estimateTokens,
   newState,
   plan,
   seedScratch,
@@ -39,6 +41,100 @@ function session(steps, mkCall = (i) => ({ name: "bash", args: { command: `cmd${
 const resultText = (m) => m.content[0].text;
 const thinkingOf = (m) => m.content.filter((b) => b.type === "thinking").length;
 const kinds = (state) => Object.values(state.elided).reduce((n, e) => ({ ...n, [e.kind]: (n[e.kind] ?? 0) + 1 }), {});
+
+// Puts the provider's usage on one assistant step of a session, the way the context hook receives
+// it (assistant step i sits at index 1 + 2i).
+function withUsage(msgs, step, usage, stopReason) {
+  const m = msgs[1 + 2 * step];
+  m.usage = usage;
+  if (stopReason) m.stopReason = stopReason;
+  return msgs;
+}
+const assistantIdx = (step) => 1 + 2 * step;
+
+// A session whose last message is the assistant turn at `step` — the tool result it asked for has
+// not come back yet — so there is no tail and the anchored number is the provider's alone.
+function endingAt(step, steps = 12) {
+  return withUsage(session(steps), step, { totalTokens: 90000 }).slice(0, assistantIdx(step) + 1);
+}
+
+test("an anchored estimate takes the provider's count and estimates only the tail", () => {
+  const msgs = withUsage(session(12), 11, { totalTokens: 90000 });
+  const anchored = estimateTokens(msgs, DEFAULTS);
+  assert.equal(anchored.anchorIdx, assistantIdx(11));
+  assert.equal(anchored.anchorTokens, 90000);
+  assert.equal(anchored.tokens, 90000 + estimateMessages(msgs.slice(assistantIdx(11) + 1), DEFAULTS));
+  assert.equal(estimateTokens(endingAt(11), DEFAULTS).tokens, 90000, "with nothing behind the anchor the count is the provider's alone");
+
+  // The tail is the only part charsPerToken still scales: one more step behind the anchor.
+  const tailStart = assistantIdx(10) + 1;
+  const withTail = withUsage(session(12), 10, { totalTokens: 90000 });
+  assert.equal(estimateTokens(withTail, DEFAULTS).anchorIdx, assistantIdx(10));
+  assert.equal(estimateTokens(withTail, DEFAULTS).tokens, 90000 + estimateMessages(withTail.slice(tailStart), DEFAULTS));
+});
+
+test("the system prompt is not added on top of an anchor, because the provider already counted it", () => {
+  assert.equal(estimateTokens(endingAt(11), DEFAULTS, 5000).tokens, 90000);
+  assert.equal(estimateTokens(session(12), DEFAULTS, 5000).tokens, 5000 + estimateMessages(session(12), DEFAULTS),
+    "without an anchor the overhead is the only thing accounting for the system prompt");
+});
+
+test("the newest usable usage is the anchor: aborted, errored and zero-counted turns are skipped", () => {
+  let msgs = session(12);
+  withUsage(msgs, 9, { totalTokens: 50000 });
+  withUsage(msgs, 10, { totalTokens: 60000 });
+  withUsage(msgs, 11, { totalTokens: 70000 });
+  assert.equal(estimateTokens(msgs, DEFAULTS).anchorTokens, 70000, "the newest usage wins");
+
+  withUsage(msgs, 11, { totalTokens: 70000 }, "aborted");
+  assert.equal(estimateTokens(msgs, DEFAULTS).anchorTokens, 60000, "an aborted turn describes a request that never completed");
+
+  withUsage(msgs, 10, { totalTokens: 60000 }, "error");
+  assert.equal(estimateTokens(msgs, DEFAULTS).anchorTokens, 50000, "nor does an errored one");
+
+  // A provider that reports all zeroes has told us nothing, so fall through to the estimate.
+  const zeroed = withUsage(session(12), 11, { input: 0, output: 0 });
+  assert.equal(estimateTokens(zeroed, DEFAULTS).anchorIdx, -1);
+  assert.equal(estimateTokens(zeroed, DEFAULTS).tokens, estimateTokens(session(12), DEFAULTS).tokens,
+    "a zero count is not an anchor, not a zero-sized context");
+});
+
+test("totalTokens wins over the component fields, matching Pi's calculateContextTokens", () => {
+  assert.equal(estimateTokens([{ role: "assistant", content: [], usage: { totalTokens: 7, input: 1000, output: 1000 } }], DEFAULTS).tokens, 7);
+  // The components add up only when the provider sends no total. reasoning is not one of Pi's terms.
+  assert.equal(estimateTokens([{ role: "assistant", content: [], usage: { input: 10, output: 2, cacheRead: 300, cacheWrite: 4, reasoning: 9999 } }], DEFAULTS).tokens, 316);
+  assert.equal(estimateTokens([{ role: "assistant", content: [], usage: {} }], DEFAULTS).anchorIdx, -1);
+});
+
+test("with an anchor, what was elided at or before it still comes off ctxAfter", () => {
+  // Anchor on step 5 of 12: everything the plan will elide (thinking of steps 0..5, results of
+  // 0..3) lies at or before the anchor, and the tail is untouched. The provider's number counts that
+  // content in full and cannot be revised, so ctxAfter has to subtract it — otherwise the head
+  // savings are invisible and a squeeze would never see itself get under the cap.
+  const msgs = withUsage(session(12), 5, { totalTokens: 90000 });
+  const { messages, stats } = plan(msgs, newState(), DEFAULTS, 200_000, spill);
+  const head = assistantIdx(5) + 1;
+  assert.equal(stats.advanced, true);
+  assert.ok(stats.resultsElided > 0 && stats.thinkingDropped > 0, "the head really was elided");
+  assert.deepEqual(messages.slice(head), msgs.slice(head), "the tail is untouched, so every saving is in the head");
+  assert.equal(stats.ctxBefore, estimateTokens(messages, DEFAULTS).tokens, "the anchored total is what the provider reported plus the tail");
+  assert.ok(stats.ctxAfter < stats.ctxBefore, "the head savings are counted, not swallowed by the anchor");
+  assert.equal(stats.ctxAfter, stats.ctxBefore - (estimateMessages(msgs.slice(0, head), DEFAULTS) - estimateMessages(messages.slice(0, head), DEFAULTS)));
+  assert.equal(stats.elidedTotal, stats.ctxBefore - stats.ctxAfter);
+});
+
+test("without a usable anchor the accounting is exactly what it was before", () => {
+  const msgs = session(12);
+  const { messages, stats } = plan(msgs, newState(), DEFAULTS, 40_000, spill, 1234);
+  assert.equal(stats.ctxBefore, 1234 + estimateMessages(msgs, DEFAULTS));
+  assert.equal(stats.ctxAfter, 1234 + estimateMessages(messages, DEFAULTS));
+
+  // An unusable usage must not switch the accounting: same session, same numbers, with the zero.
+  const zeroed = withUsage(session(12), 11, { input: 0, output: 0 });
+  const viaZero = plan(zeroed, newState(), DEFAULTS, 40_000, spill, 1234);
+  assert.equal(viaZero.stats.ctxBefore, stats.ctxBefore);
+  assert.equal(viaZero.stats.ctxAfter, stats.ctxAfter);
+});
 
 test("does nothing below startAtFraction of the window", () => {
   const msgs = session(12);

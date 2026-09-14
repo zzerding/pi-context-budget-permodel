@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+The estimator no longer guesses the size of the whole prompt from its character count. It was
+`len / charsPerToken` over every message, and that ratio is measurably not constant: it runs about
+3.0 for `deepseek-v4-flash` and 6.5 for `deepseek-v4.1-flash`. A threshold written as a fraction of
+the window was therefore compared against a number that could be off by most of a factor of two, so
+it fired at the wrong real size, differently on each model — and calibrating `charsPerToken` from a
+running session was circular, because that session was sent through the estimator being measured.
+
+Replayed over a recorded 271-request session, the old estimate was 65% off the number the provider
+reported; the mean error is now 1.4%.
+
+Changed
+
+- The size of a prompt is anchored on the newest assistant message's `usage` — the count the provider
+  returned for that exact request, as Pi's own `estimateContextTokens` (core/compaction) does. Only the messages after
+  it are estimated, so `charsPerToken` scales a short tail instead of the whole session and its error
+  stops accumulating: switching models no longer re-places every threshold. A turn whose
+  `stopReason` is `aborted` or `error`, or whose count is zero, is not used as an anchor.
+- `maxPromptTokens` and `maxHardTokens` are now stated in **real tokens**, the provider's unit, so
+  `55000` means a 55k-token prompt on any model. Previously they were in the extension's estimate.
+- `charsPerToken` no longer needs calibrating and its default is no longer load-bearing; the field
+  still scales the tail. The `modelOverrides` advice in the README is downgraded accordingly.
+- On an estimate with no anchor — a session's first request, or a log without usage — the accounting
+  is unchanged: the full chars-based estimate plus the system-prompt overhead.
+
+The residual error is a known, bounded bias rather than drift: a provider's `totalTokens` includes
+that turn's own completion, thinking included, and whether that thinking returns in the next prompt
+depends on the provider. Pi resends it wherever the thinking carries a signature — verbatim for the
+`reasoning` / `reasoning_content` / `reasoning_text` fields, structurally as `reasoning_details`, or
+as text for compat models — so for those models the anchor lands on the next prompt almost exactly.
+Models that return no signature (grok-4.5) and the Google Gemini path drop the newest turn's
+thinking, and only there can the estimate overshoot by up to one turn of it. Either way the error is
+one turn's thinking at most: bounded, not accumulating. Correcting it would put this number below
+Pi's and make the two layers disagree about how full the window is.
+
 ## 0.6.0 — 2026-09-08
 
 Every eligible result became a citation and then stayed one forever, so in a long session the

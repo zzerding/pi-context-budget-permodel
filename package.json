@@ -29,6 +29,7 @@
     "node": ">=23"
   },
   "files": [
+    "anchor.ts",
     "archive.ts",
     "budget.ts",
     "compact.ts",

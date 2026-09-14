@@ -15,7 +15,7 @@
 // more (including recent/protected results) until we are at or below the cap.
 import { estimate, type Config } from "./config.ts";
 import { RESULT_MIN_TOKENS_FLOOR, argId, argStub, tierOf, type Elided, type Spill, type Tier } from "./archive.ts";
-import { argText, estimateMessages, getAt, indexMessages, latestBySig, protectedReads, recalledIds, setAt, thinkingText, type ArgInfo, type Block, type Index, type Msg, type ResultInfo, type ThinkInfo } from "./messages.ts";
+import { argText, estimateMessages, estimateTokens, getAt, indexMessages, latestBySig, protectedReads, recalledIds, setAt, thinkingText, type ArgInfo, type Block, type Index, type Msg, type ResultInfo, type ThinkInfo } from "./messages.ts";
 import { currentSavings, gainAt, isReducible, leanCandidates, placeAt, savingsAt, sentFor, targetTier, type Host } from "./tier.ts";
 import { emptyScratch, type Scratch } from "./pin.ts";
 
@@ -28,7 +28,7 @@ export * from "./pin.ts";
 export * from "./reduce.ts";
 export * from "./summary.ts";
 export * from "./tier.ts";
-export { argPathName, estimateMessages, getAt, indexMessages, resultText, setAt, textOf, type Msg } from "./messages.ts";
+export { argPathName, estimateMessages, estimateTokens, getAt, indexMessages, resultText, setAt, textOf, type Msg, type TokenEstimate } from "./messages.ts";
 
 export interface PlanState {
   elided: Record<string, Elided>; // keyed by toolCallId, "arg:<toolCallId>:<name>" or "think:<hash>"
@@ -94,10 +94,12 @@ function frozenHolds(state: PlanState, cfg: Config): boolean {
   return cfg.cacheMode === "frozen" && state.frozen === true;
 }
 
-// baseTokens: prompt overhead the messages do not carry (system prompt, tool schemas).
+// baseTokens: prompt overhead the messages do not carry (system prompt, tool schemas). It is used
+// only when there is no anchor — a provider count already includes both.
 export function plan(messages: Msg[], state: PlanState, cfg: Config, contextWindow: number, spill: Spill, baseTokens = 0): { messages: Msg[]; stats: Stats } {
   const ix = indexMessages(messages, cfg);
-  const ctxBefore = baseTokens + estimateMessages(messages, cfg);
+  const est = estimateTokens(messages, cfg, baseTokens);
+  const ctxBefore = est.tokens;
   const h: Host = { messages, state, cfg, spill, latest: latestBySig(ix.results), recalled: recalledIds(messages), stubTokens: new Map() };
   const ctxFrozen = ctxBefore - frozenSavings(h, ix);
   const stats: Stats = { ctxBefore, ctxAfter: ctxFrozen, advanced: false, squeezed: false, elidedTotal: 0, thinkingDropped: 0, resultsElided: 0, resultsReduced: 0, resultsLean: 0, argsElided: 0, eligibleWaiting: 0 };
@@ -132,7 +134,19 @@ export function plan(messages: Msg[], state: PlanState, cfg: Config, contextWind
   }
 
   const out = apply(h, ix, stats);
-  stats.ctxAfter = baseTokens + estimateMessages(out, cfg);
+  // apply() replaces contents in place, so the projected list is the same length and the anchor sits
+  // at the same index. With no anchor this is the plain estimate of what will be sent, as before.
+  //
+  // With an anchor the head is a number the provider already reported and we cannot change; what we
+  // *can* do is take off everything elided at or before it, which that number still counts in full —
+  // otherwise the head savings would be invisible and ctxAfter would only drop by what the tail lost.
+  // The head delta is the difference of two estimates of the same span, so the per-message overhead
+  // is on both sides and cancels rather than being miscounted as a saving. Measured this way (and not
+  // from frozenSavings) so the no-anchor path keeps producing exactly the number it always did.
+  const head = est.anchorIdx + 1;
+  stats.ctxAfter = head > 0
+    ? Math.max(0, est.tokens - (estimateMessages(messages.slice(0, head), cfg) - estimateMessages(out.slice(0, head), cfg)))
+    : baseTokens + estimateMessages(out, cfg);
   stats.elidedTotal = ctxBefore - stats.ctxAfter;
   return { messages: out, stats };
 }

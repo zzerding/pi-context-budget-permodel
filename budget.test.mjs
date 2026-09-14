@@ -181,7 +181,7 @@ test("the estimator default is the measured 3.35, and a real config can still se
 
 test("an absolute threshold is the same fraction the extension would estimate, and nothing more", () => {
   // The conversion is a division by the window and nothing else. A correction factor here would
-  // double-count charsPerToken: the threshold is already stated in this extension's own estimate.
+  // double-count charsPerToken: the threshold is already stated in real tokens, the provider's unit.
   const abs = budgetFor({ ...DEFAULTS, maxPromptTokens: 55_000, maxHardTokens: 109_000 }, 1_000_000, pi());
   const frac = budgetFor({ ...DEFAULTS, startAtFraction: 0.055, highWaterFraction: 0.109 }, 1_000_000, pi());
   assert.equal(abs.cfg.startAtFraction, 0.055);

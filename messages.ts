@@ -1,6 +1,7 @@
 // Message shapes and indexing. Pure; no Pi imports.
 import { estimate, type Config } from "./config.ts";
 import { argKey, thinkKey, thinkId, type Elided } from "./archive.ts";
+import { findAnchor } from "./anchor.ts";
 
 export type Block = { type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
 export type Msg = {
@@ -12,6 +13,8 @@ export type Msg = {
   summary?: string;   // compactionSummary / branchSummary
   output?: string;    // bashExecution
   details?: unknown;
+  usage?: unknown;    // assistant turns only: the provider's count for that request (see anchor.ts)
+  stopReason?: string;// ...and why it stopped; "aborted"/"error" usage is not usable as an anchor
   [k: string]: unknown;
 };
 
@@ -53,6 +56,28 @@ export function thinkingText(m: Msg): string {
 
 export function estimateMessages(messages: Msg[], cfg: Config): number {
   return messages.reduce((n, m) => n + estimate(textOf(m), cfg) + 8, 0);
+}
+
+export interface TokenEstimate {
+  tokens: number;
+  anchorIdx: number;   // -1 when the whole count is chars-based, so nothing can be corrected below it
+  anchorTokens: number; // the provider's count for the anchor message alone; 0 when there is none
+}
+
+// How large this message list is, in the unit the thresholds are stated in.
+//
+// With an anchor the head is the provider's own count and only the messages after it are estimated,
+// so charsPerToken scales a handful of trailing messages instead of the whole session and its error
+// stops accumulating. baseTokens is the overhead the messages do not carry (system prompt, tool
+// schemas) and is added *only* in the fallback: the provider's number already counted both.
+//
+// anchorIdx comes back because the messages at or before it are the ones whose elisions are invisible
+// here — they sit inside a number that cannot change. plan.ts re-projects that span to price them.
+export function estimateTokens(messages: Msg[], cfg: Config, baseTokens = 0): TokenEstimate {
+  const anchor = findAnchor(messages);
+  if (!anchor) return { tokens: baseTokens + estimateMessages(messages, cfg), anchorIdx: -1, anchorTokens: 0 };
+  const tail = estimateMessages(messages.slice(anchor.idx + 1), cfg);
+  return { tokens: anchor.tokens + tail, anchorIdx: anchor.idx, anchorTokens: anchor.tokens };
 }
 
 export interface ResultInfo {

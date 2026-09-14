@@ -216,11 +216,11 @@ back to the default.
 | `emergencyKeepSteps` | 2 | squeeze tries to keep this many recent result steps |
 | `emergencyKeepThinking` | 1 | squeeze drops thinking to this many recent steps |
 | `scratchLimitChars` | 1500 | hard cap for the session pin |
-| `charsPerToken` | 3.35 | estimator used for thresholds (fixed-effect regression over real sessions; per-model spread is real) |
+| `charsPerToken` | 3.35 | scales the messages after the newest provider-reported usage; timing only, so it no longer needs calibrating |
 | `cacheMode` | off | how often the elision boundary may move: `off`, `lagged`, `frozen` |
 | `cacheLagSteps` | 8 | `lagged`: wait this many assistant steps between advances (minimum 1) |
-| `maxPromptTokens` | unset | absolute start threshold in estimated tokens; wins over `startAtFraction` |
-| `maxHardTokens` | unset | absolute high-water threshold in estimated tokens; wins over `highWaterFraction` |
+| `maxPromptTokens` | unset | absolute start threshold in real tokens; wins over `startAtFraction` |
+| `maxHardTokens` | unset | absolute high-water threshold in real tokens; wins over `highWaterFraction` |
 | `modelOverrides` | unset | per-model settings, keyed `"<provider>/<modelId>"` |
 
 `keepThinkingSteps` is the one knob with a measured quality trade-off:
@@ -228,11 +228,20 @@ published multi-turn tool-calling benchmarks give Qwen3-class models a few
 points for retained thinking history, so keep it at 6 or above unless the
 window is very small. Dropped thinking is still in the archive.
 
-`maxPromptTokens` and `maxHardTokens` are stated in the same unit the extension
-measures in — `len / charsPerToken`, not the provider's own count — so set
-`charsPerToken` to what your model actually does first. The two are converted
-to fractions of the context window, so they mean different things on different
-models; use `modelOverrides` when that matters:
+`maxPromptTokens` and `maxHardTokens` are stated in **real tokens** — the same
+unit the provider reports — so `55000` means a 55k-token prompt whatever model
+is answering. That is because the estimate is anchored: the newest assistant
+message in the `context` hook carries the usage the provider returned for it,
+and the size is measured as that number plus a short estimated tail. The tail is
+the only part `charsPerToken` scales, so a wrong ratio moves a threshold by a few
+percent of a tail rather than by the whole session, and switching models no
+longer re-places every threshold. The anchor itself is exact for models that
+have Pi resend thinking (signature-bearing ones do), and overshoots by at most
+the newest turn's thinking for those that do not — bounded either way.
+
+The two absolute thresholds are converted to fractions of the context window, so
+they still mean different things on different models; use `modelOverrides` when
+that matters:
 
 ```json
 {
@@ -243,11 +252,13 @@ models; use `modelOverrides` when that matters:
 }
 ```
 
-To measure your own, replay a recorded session through `replay.ts` and fit
-`real = BASE + chars / charsPerToken` per session, so the system prompt and tool
-schemas land in the intercept rather than in the slope. Across this machine's
-models the median is 3.35 but the spread is roughly 3.0–6.5, so do not assume
-the default fits the model you are actually running.
+`charsPerToken` is no longer a calibration step. Before, every threshold was
+compared against `len / charsPerToken` over the whole session, so a ratio that
+was off by half moved the threshold by half and the extension fired at the wrong
+size; that is what made `real = BASE + chars / charsPerToken` worth fitting per
+session (median 3.35 here, spread roughly 3.0–6.5, with the system prompt and
+tool schemas in the intercept). With the anchor in place only the tail is scaled,
+so the default is fine unless you want a tighter tail.
 
 A model's entry is merged key by key over the global settings, not swapped in
 whole: an override that sets one key keeps tracking the global value for every

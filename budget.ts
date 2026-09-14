@@ -38,12 +38,13 @@ export function compactionTrigger(pi: PiCompaction, contextWindow: number): numb
   return pi.enabled && contextWindow > 0 ? Math.max(0, contextWindow - pi.reserveTokens) : Number.POSITIVE_INFINITY;
 }
 
-// An absolute threshold is expressed in this extension's own estimate, not in the provider's
-// tokenizer: everything the planner measures arrives through config.estimate() as len / charsPerToken,
-// so a user who has measured their own chars-per-token sets that key and states the threshold in the
-// same units. Dividing by contextWindow is therefore the whole conversion — a correction factor here
-// (say 3.0/3.6) would apply the tokenizer's error a second time, and the layer would stop being
-// testable on its own.
+// An absolute threshold is stated in real tokens, the same unit the estimator now returns: the head
+// of every measurement is the provider's own count for the newest answered request (anchor.ts), so
+// `maxPromptTokens: 55000` means 55000 tokens of prompt whatever charsPerToken is set to. Dividing
+// by contextWindow is therefore the whole conversion, and both sides of the comparison are in the
+// provider's unit. (On a session with no usage yet there is nothing to anchor to and the threshold
+// is compared against a chars-based estimate; that is the first request of a session, where the
+// prompt is small and the choice of threshold is not yet close.)
 //
 // A fraction of 1 or more is not a threshold either: nothing is above a whole window and still a
 // request the planner can act on before the provider rejects it. Left as written, `maxPromptTokens:

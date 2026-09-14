@@ -68,16 +68,15 @@ export const DEFAULTS: Config = {
   squeeze: false,
   pin: false,
   interceptCompact: true,
-  // Measured by fixed-effect regression over recorded sessions (real = BASE + chars/cpt, fitted per
-  // session so the system prompt and tool schemas land in the intercept). Median across models is
-  // 3.35; the spread is real — 3.0 for deepseek-v4-flash and gpt-5.6-luna, 3.6 for glm-5.3-flash,
-  // 6.5 for deepseek-v4.1-flash — so set `modelOverrides` rather than trusting this one value.
+  // Only ever scales the messages after the newest provider-reported usage (anchor.ts), so it no
+  // longer has to be right — a few trailing messages at the wrong ratio move a threshold by far less
+  // than a whole session did. The measured median is still worth shipping as the default.
   //
-  // An earlier revision of this fork shipped 4.49 here, from a measurement that counted
-  // JSON.stringify of the whole content block instead of the text the estimator actually reads
-  // (messages.ts textOf) and used a session that had already compacted. That overstated the ratio
-  // by about a third and made every threshold fire late. The value is a guess only in the sense that
-  // it is a median; it is not a placeholder.
+  // Was measured by fixed-effect regression over recorded sessions; the spread is real — 3.0 for
+  // deepseek-v4-flash and gpt-5.6-luna, 3.6 for glm-5.3-flash, 6.5 for deepseek-v4.1-flash. An
+  // earlier revision of this fork shipped 4.49, from a measurement that counted JSON.stringify of
+  // the whole content block instead of the text the estimator actually reads (messages.ts textOf)
+  // and used a session that had already compacted; that overstated the ratio by about a third.
   charsPerToken: 3.35,
   cacheMode: "off",
   cacheLagSteps: 8,
