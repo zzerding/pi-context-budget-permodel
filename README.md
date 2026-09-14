@@ -216,7 +216,7 @@ back to the default.
 | `emergencyKeepSteps` | 2 | squeeze tries to keep this many recent result steps |
 | `emergencyKeepThinking` | 1 | squeeze drops thinking to this many recent steps |
 | `scratchLimitChars` | 1500 | hard cap for the session pin |
-| `charsPerToken` | 4.49 | estimator used for thresholds (measured on a real session) |
+| `charsPerToken` | 3.35 | estimator used for thresholds (fixed-effect regression over real sessions; per-model spread is real) |
 | `cacheMode` | off | how often the elision boundary may move: `off`, `lagged`, `frozen` |
 | `cacheLagSteps` | 8 | `lagged`: wait this many assistant steps between advances (minimum 1) |
 | `maxPromptTokens` | unset | absolute start threshold in estimated tokens; wins over `startAtFraction` |
@@ -236,12 +236,18 @@ models; use `modelOverrides` when that matters:
 
 ```json
 {
-  "charsPerToken": 4.49,
+  "charsPerToken": 3.35,
   "maxPromptTokens": 55000,
   "maxHardTokens": 109000,
   "modelOverrides": { "local/qwen3.8-27b": { "maxPromptTokens": 200000, "cacheMode": "frozen" } }
 }
 ```
+
+To measure your own, replay a recorded session through `replay.ts` and fit
+`real = BASE + chars / charsPerToken` per session, so the system prompt and tool
+schemas land in the intercept rather than in the slope. Across this machine's
+models the median is 3.35 but the spread is roughly 3.0–6.5, so do not assume
+the default fits the model you are actually running.
 
 A model's entry is merged key by key over the global settings, not swapped in
 whole: an override that sets one key keeps tracking the global value for every
@@ -342,9 +348,14 @@ Forked from
 - **`cacheMode`** (`off` / `lagged` / `frozen`) — controls how often the plan
   is allowed to move the elision boundary, for deployments that pay for prompt
   caching.
-- **`charsPerToken` default is now `4.49`**, measured by regression against a
-  real recorded session, replacing the earlier guess of `3.3`. The old value
-  overstated token counts by 36%, which fired thresholds early.
+- **`charsPerToken` default is now `3.35`**, measured by fixed-effect regression
+  over recorded sessions (fitted per session, so the system prompt lands in the
+  intercept). The upstream default of `3.3` turned out to be close; this fork
+  briefly shipped `4.49`, which came from a flawed measurement and has been
+  reverted — see the note under [Configuration](#configuration).
+- **Per-model `charsPerToken` is a real effect**, not noise: `deepseek-v4-flash`
+  and `gpt-5.6-luna` measure around `3.0`, `glm-5.3-flash` around `3.6`, and
+  `deepseek-v4.1-flash` around `6.5`. Set it per model when the timing matters.
 - **Archive garbage collection** — `gcArchives()`, run once per session start,
   deletes per-session snapshot directories older than 30 days. Upstream never
   removes them; they grow without bound. Liveness is judged by the newest mtime

@@ -216,7 +216,8 @@ test("the latest step is never elided, even with keepRecentSteps 0 or under sque
   assert.equal(resultText(out.messages.at(-1)), big("out11"));
   // The window is derived from the fixture instead of hardcoded: charsPerToken decides how many
   // tokens those 12 steps hold, and the old fixed 20000 was only 7/6 of the fixture at the old
-  // default — at 4.49 that ratio no longer squeezes, so the test would pass without testing anything.
+  // default — at another default that ratio would no longer squeeze, so the test would pass without
+  // testing anything. See the pin on DEFAULTS.charsPerToken in budget.test.mjs.
   const held = plan(session(12), newState(), DEFAULTS, 40_000, spill).stats.ctxBefore;
   const window = Math.round((held * 7) / 6);
   out = plan(session(12), newState(), { ...DEFAULTS, squeeze: true }, window, spill);

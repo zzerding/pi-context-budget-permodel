@@ -42,7 +42,7 @@ export function compactionTrigger(pi: PiCompaction, contextWindow: number): numb
 // tokenizer: everything the planner measures arrives through config.estimate() as len / charsPerToken,
 // so a user who has measured their own chars-per-token sets that key and states the threshold in the
 // same units. Dividing by contextWindow is therefore the whole conversion — a correction factor here
-// (say 3.3/4.49) would apply the tokenizer's error a second time, and the layer would stop being
+// (say 3.0/3.6) would apply the tokenizer's error a second time, and the layer would stop being
 // testable on its own.
 //
 // A fraction of 1 or more is not a threshold either: nothing is above a whole window and still a

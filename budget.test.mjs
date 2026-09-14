@@ -28,8 +28,8 @@ const chars = (n) => "x".repeat(n);
 let seq = 0;
 const msg = (role, n, extra = {}) => ({ type: "message", id: `e${seq++}`, message: { role, content: [{ type: "text", text: chars(n) }], ...extra } });
 
-// A branch of `steps` assistant/tool-result pairs after one user message: ~880 tokens a step at the
-// default 4.49 chars per token, the shape the 4b session was looping on.
+// A branch of `steps` assistant/tool-result pairs after one user message: ~1180 tokens a step at the
+// default 3.35 chars per token, the shape the 4b session was looping on.
 function branch(steps) {
   seq = 0;
   const entries = [msg("user", 200)];
@@ -166,14 +166,17 @@ test("the session goal survives later compactions through the previous summary",
 
 // --- absolute thresholds, per-model overrides ---------------------------------------------------
 
-test("the estimator default is the measured 4.49, and a real config can still set its own", () => {
-  // Pinned deliberately: 3.3 was a guess that overstated token counts by 36%, so every threshold
-  // fired that much earlier than configured. No other test would notice the regression, because they
-  // derive their windows from the estimator instead of hardcoding token counts.
-  assert.equal(DEFAULTS.charsPerToken, 4.49);
-  assert.equal(mergeConfig({}).charsPerToken, 4.49);
-  assert.equal(mergeConfig({ charsPerToken: 3.3 }).charsPerToken, 3.3, "a measured value still wins");
-  assert.equal(mergeConfig({ charsPerToken: 0 }).charsPerToken, 4.49, "0 falls back rather than dividing by zero");
+test("the estimator default is the measured 3.35, and a real config can still set its own", () => {
+  // Pinned deliberately. This value decides every threshold's timing, so nothing else would notice a
+  // regression: the other tests derive their windows from the estimator instead of hardcoding token
+  // counts. An earlier revision of this fork shipped 4.49 here, from a measurement that counted the
+  // JSON.stringify of each content block rather than the text the estimator reads, and that read a
+  // session which had already compacted. It overstated the ratio by about a third and made every
+  // threshold fire late.
+  assert.equal(DEFAULTS.charsPerToken, 3.35);
+  assert.equal(mergeConfig({}).charsPerToken, 3.35);
+  assert.equal(mergeConfig({ charsPerToken: 4.49 }).charsPerToken, 4.49, "a measured value still wins");
+  assert.equal(mergeConfig({ charsPerToken: 0 }).charsPerToken, 3.35, "0 falls back rather than dividing by zero");
 });
 
 test("an absolute threshold is the same fraction the extension would estimate, and nothing more", () => {

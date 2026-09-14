@@ -17,7 +17,7 @@
   "stubTailChars": 400,
   "argHeadChars": 160,
   "recallLimitChars": 24000,
-  "charsPerToken": 4.49,
+  "charsPerToken": 3.35,
   "squeeze": false,
   "pin": false,
   "interceptCompact": true,
