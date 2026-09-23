@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-09-23
 
 The estimator no longer guesses the size of the whole prompt from its character count. It was
 `len / charsPerToken` over every message, and that ratio is measurably not constant: it runs about
@@ -39,6 +39,38 @@ Models that return no signature (grok-4.5) and the Google Gemini path drop the n
 thinking, and only there can the estimate overshoot by up to one turn of it. Either way the error is
 one turn's thinking at most: bounded, not accumulating. Correcting it would put this number below
 Pi's and make the two layers disagree about how full the window is.
+
+Pi 0.86 and 0.87 moved the ground this extension stands on, and this release stops reading and
+writing the 0.85 shapes. A `compaction.modelOverrides` block written for a large-window model
+clamped a small one as if it did not exist, because the extension looked only at the ordinary
+fields; a `reserveTokens: 0` fell back to the default 16384, the opposite of what the zero was
+asking for; and the note returned as `systemPrompt` rewrote the whole system message on every
+request — a full prefix-cache miss after any wording change. 78 tests pass under `node --test`,
+six of them new for context edits.
+
+Fixes
+
+- `compaction.modelOverrides` is resolved per model, the way Pi 0.86's `getCompactionTokenSetting`
+  does it: field by field, the model's `modelOverrides["provider/id"]` entry wins over the
+  ordinary `compaction` field, which wins over Pi's default. A value that is not a non-negative
+  number falls back at its own level, so a typo'd override cannot hide a valid ordinary setting.
+  A model with no entry resolves to the ordinary fields everywhere — exactly the pre-
+  modelOverrides behaviour.
+- Global and project settings merge recursively, like Pi's `deepMergeSettings`: `modelOverrides`
+  merge key by key and each model entry field by field, so a global entry for a model keeps
+  working when the project file only sets one of its tokens, and a global model entry survives a
+  project file that only sets the ordinary (model-less) fields. Previously the merge was spread
+  shallow, so a project `compaction` block replaced a whole global model entry.
+- `reserveTokens: 0` and `keepRecentTokens: 0` are accepted. Pi treats both as non-negative; the
+  extension read `0` as missing and silently substituted the default (16384 / 20000), putting
+  Pi's compaction threshold where the user had explicitly asked it not to sit.
+- The extension note is published as a system-prompt section named `context-budget` instead of
+  being returned as `systemPrompt`, which is read-only in Pi 0.87 anyway. Sections are diffed and
+  patched, so a wording change patches rather than forcing a full prompt rewrite and a cache miss.
+- Pi 0.87 `context_edit` entries are resolved before the span, token counts and cut points are
+  computed — in `spanFor` and in the replay harness alike — so the numbers describe the context
+  as it now stands: an omitted message costs nothing, a replaced one costs its replacement. The
+  last edit per target wins, and an edit whose target is on another branch is ignored.
 
 ## 0.6.0 — 2026-09-08
 
