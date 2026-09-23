@@ -12,8 +12,10 @@ import {
   mergeConfig,
   applySubagentThresholds,
   isSubagentArgv,
+  mergePiCompaction,
   modelRefOf,
   newState,
+  piCompactionFor,
   piCompactionFrom,
   recut,
   resolveConfigForModel,
@@ -79,13 +81,58 @@ test("with Pi's compaction off there is no threshold to stay under", () => {
 
 test("Pi's compaction settings are read with Pi's own fallbacks", () => {
   assert.deepEqual(piCompactionFrom({}), PI_COMPACTION_DEFAULTS);
-  assert.deepEqual(piCompactionFrom({ compaction: { reserveTokens: "big", keepRecentTokens: 0 } }), PI_COMPACTION_DEFAULTS);
+  assert.deepEqual(piCompactionFrom({ compaction: { reserveTokens: "big", keepRecentTokens: 16000 } }), {
+    enabled: true,
+    reserveTokens: 16384,
+    keepRecentTokens: 16000,
+  });
+  // 0 is a legal value — Pi validates a non-negative safe integer — so only NaN and negatives
+  // fall back to the default, each field on its own.
+  assert.deepEqual(piCompactionFrom({ compaction: { reserveTokens: 0, keepRecentTokens: NaN } }), {
+    enabled: true,
+    reserveTokens: 0,
+    keepRecentTokens: 20000,
+  });
   assert.deepEqual(piCompactionFrom({ compaction: { enabled: false, reserveTokens: 8192, keepRecentTokens: 16000 } }), {
     enabled: false,
     reserveTokens: 8192,
     keepRecentTokens: 16000,
   });
+  assert.deepEqual(piCompactionFrom({ compaction: { reserveTokens: -1, keepRecentTokens: -1 } }), PI_COMPACTION_DEFAULTS);
   assert.equal(compactionTrigger(pi(), SMALL), 16384);
+});
+
+test("modelOverrides resolve field by field, falling back at each level", () => {
+  const raw = { reserveTokens: 8192, modelOverrides: { "kimi/kimi-k2": { reserveTokens: 4096 } } };
+  assert.deepEqual(piCompactionFor(raw, "kimi/kimi-k2"), { enabled: true, reserveTokens: 4096, keepRecentTokens: 20000 });
+  // A model with no entry gets the ordinary fields, which is the behaviour before modelOverrides.
+  assert.deepEqual(piCompactionFor(raw, "other/model"), { enabled: true, reserveTokens: 8192, keepRecentTokens: 20000 });
+  assert.deepEqual(piCompactionFor(raw, undefined), { enabled: true, reserveTokens: 8192, keepRecentTokens: 20000 });
+  // An invalid override value falls back to the ordinary setting, not straight to the default.
+  assert.equal(piCompactionFor({ reserveTokens: 8192, modelOverrides: { "m/m": { reserveTokens: -1, keepRecentTokens: NaN } } }, "m/m").reserveTokens, 8192);
+  assert.equal(piCompactionFor({ modelOverrides: { "m/m": { reserveTokens: 0 } } }, "m/m").reserveTokens, 0);
+  assert.deepEqual(piCompactionFor(undefined, "m/m"), PI_COMPACTION_DEFAULTS);
+});
+
+test("global and project compaction blocks merge with modelOverrides by key", () => {
+  const merged = mergePiCompaction(
+    { reserveTokens: 8192, modelOverrides: { "a/a": { reserveTokens: 1 } } },
+    { keepRecentTokens: 4000, modelOverrides: { "b/b": { keepRecentTokens: 2 }, "a/a": { keepRecentTokens: 3 } } },
+  );
+  assert.deepEqual(merged, {
+    reserveTokens: 8192,
+    keepRecentTokens: 4000,
+    modelOverrides: { "a/a": { reserveTokens: 1, keepRecentTokens: 3 }, "b/b": { keepRecentTokens: 2 } },
+  });
+  // A global model entry survives a project file that only sets ordinary fields: the project's
+  // field wins for every model, the global entry still overrides it for its own model.
+  const globalOnly = mergePiCompaction({ modelOverrides: { "a/a": { reserveTokens: 1 } } }, { reserveTokens: 4096 });
+  assert.deepEqual(globalOnly, { reserveTokens: 4096, modelOverrides: { "a/a": { reserveTokens: 1 } } });
+  const projectOnly = mergePiCompaction(undefined, { reserveTokens: 1 });
+  assert.deepEqual(projectOnly, { reserveTokens: 1 });
+  const globalsOnly = mergePiCompaction({ reserveTokens: 1 }, undefined);
+  assert.deepEqual(globalsOnly, { reserveTokens: 1 });
+  assert.equal(mergePiCompaction("no", "object"), undefined);
 });
 
 test("a recut never lands on a tool result and always keeps less than Pi's cut", () => {

@@ -7,7 +7,7 @@
 // by CONTEXT_BUDGET_CONFIG. Per-request stats go to CONTEXT_BUDGET_LOG when set.
 import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { budgetFor, type PiCompaction } from "./budget.ts";
+import { budgetFor, piCompactionFor, type PiCompaction } from "./budget.ts";
 import { decideCompaction, type Preparation } from "./compact.ts";
 import { applySubagentThresholds, estimate, modelRefOf, resolveConfigForModel } from "./config.ts";
 import type { Entry } from "./cut.ts";
@@ -42,7 +42,7 @@ export default function (pi: ExtensionAPI) {
   let lastSessionId: string | undefined;
   let lastWindow = 131072;
   let piCompaction = loadPiCompaction(process.cwd());
-  let budget = budgetFor(cfg, lastWindow, piCompaction);
+  let budget = budgetFor(cfg, lastWindow, piCompactionFor(piCompaction, undefined));
   let cancelled = false;         // this extension cancelled the compaction Pi is reporting as failed
   const warned = new Set<string>();
 
@@ -82,7 +82,7 @@ export default function (pi: ExtensionAPI) {
       // is actually answering, and the resolved budget follows it, so ctx.budget() and the /ctx
       // command describe the request that is about to be sent. `cfg` stays the global config.
       const modelCfg = resolveConfigForModel(cfg, modelRefOf(ctx.model));
-      budget = budgetFor(modelCfg, window, piCompaction);
+      budget = budgetFor(modelCfg, window, piCompactionFor(piCompaction, modelRefOf(ctx.model)));
       const state = stateFor(sessionId);
       const incoming = stripPin(event.messages as never[]);
       if (modelCfg.pin && seedScratch(state.scratch, incoming, modelCfg)) saveState(sessionId, state);
@@ -114,7 +114,10 @@ export default function (pi: ExtensionAPI) {
     let extra = NOTE;
     if (cfg.pin) extra += ' A trailing "[context-budget pin]" holds the session goal; update it with context_budget_pin.';
     if (cfg.interceptCompact) extra += " If Pi auto-compacts, this extension supplies a deterministic index instead of an LLM summary.";
-    return { systemPrompt: event.systemPrompt + extra };
+    // A section instead of returning `systemPrompt`: a returned prompt is forced out as one whole
+    // system message on every request, so any wording change is a full cache miss. Sections are
+    // diffed and patched instead, and event.systemPrompt is read-only in 0.87 anyway.
+    event.systemPromptOptions.sections["context-budget"] = extra;
   });
 
   pi.on("session_before_compact", (event, ctx) => {
@@ -132,7 +135,11 @@ export default function (pi: ExtensionAPI) {
       const window = ctx.model?.contextWindow ?? lastWindow;
       // Same per-model resolution as the context hook: a compaction is measured against this model's
       // window, so it has to be judged against this model's thresholds too.
-      const b = budgetFor(resolveConfigForModel(cfg, modelRefOf(ctx.model)), window, (prep.settings as PiCompaction | undefined) ?? piCompaction);
+      const b = budgetFor(
+        resolveConfigForModel(cfg, modelRefOf(ctx.model)),
+        window,
+        (prep.settings as PiCompaction | undefined) ?? piCompactionFor(piCompaction, modelRefOf(ctx.model)),
+      );
       const decision = decideCompaction({
         prep: prep as unknown as Preparation,
         entries: (event.branchEntries ?? []) as Entry[],

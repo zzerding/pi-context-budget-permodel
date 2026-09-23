@@ -140,8 +140,11 @@ Not elided: user messages, assistant text, results that carry an image,
 
 Pi compacts when the prompt passes `contextWindow - reserveTokens`, and its cut
 point keeps `keepRecentTokens` of the tail. Both live in the `compaction` block
-of `~/.pi/agent/settings.json`: global settings, the same numbers for every
-model, with no per-model override.
+of `~/.pi/agent/settings.json`, and since Pi 0.86 either field can also be set
+per model under `compaction.modelOverrides["provider/id"]`; the override wins
+over the ordinary setting, which wins over Pi's default. A project
+`.pi/settings.json` sets the ordinary fields for every model in it, while a
+global per-model value beats the project's ordinary fallback for that model.
 
 - On a 262144-token window the default 16384 reserve puts the threshold at 94%
   of the window, above the 60% target, and the two never meet.
@@ -170,7 +173,10 @@ global file) and, for the window in use:
 `/ctx` prints the cap, Pi's threshold, and whether the cap was clamped. Two
 settings keep the layers out of each other's way: `keepRecentTokens` below
 `contextWindow - reserveTokens` for the *smallest* model you run, and
-`reserveTokens` no more than about a quarter of that window.
+`reserveTokens` no more than about a quarter of that window. Without per-model
+overrides those ordinary values have to hold for every model at once; when the
+models disagree by more than a little, set `compaction.modelOverrides` for the
+small model instead of degrading the large one.
 
 ## Install
 
@@ -192,12 +198,12 @@ back to the default.
 
 | key | default | meaning |
 |---|---|---|
-| `startAtFraction` | 0.3 | do nothing below this fraction of the window |
-| `highWaterFraction` | 0.6 | above this, advance as soon as anything is eligible |
+| `startAtFraction` | 0.3 | the start line, not a cap: below this fraction of the window the plan does nothing at all |
+| `highWaterFraction` | 0.6 | the high-water line: above it the batch gate is skipped and anything eligible is elided at once |
 | `interceptCompact` | true | replace Pi's LLM compaction with a deterministic archive index (false to use Pi's summarizer) |
-| `squeeze` | false | if true, elide further until `targetFraction` |
+| `squeeze` | false | if true, elide further — past `keepRecentSteps`, into protected results — until the sent prompt is at or below `targetFraction`; the only key that gives `targetFraction` any effect |
 | `pin` | false | if true, inject a trailing session-goal pin |
-| `targetFraction` | 0.6 | squeeze target (only when `squeeze` is true) |
+| `targetFraction` | 0.6 | the squeeze cap as a fraction of the window — a ceiling, not a compression ratio; inert unless `squeeze` is true |
 | `keepRecentSteps` | 8 | results and arguments younger than this many assistant steps are untouched (minimum 1) |
 | `keepThinkingSteps` | 6 | thinking kept for this many most recent steps |
 | `minResultTokens` | 300 | smaller results are never cited (they can still be leaned) |
@@ -206,8 +212,8 @@ back to the default.
 | `reduceSearch` | true | reduce tool-search results to their top hits plus names |
 | `searchKeepTop` | 3 | hits kept with their description, per query block |
 | `argMinTokens` | 150 | smaller tool-call arguments are never elided; 0 disables argument archiving |
-| `batchTokens` | 6000 | advance only when this much can be elided at once |
-| `thinkBatchSteps` | 4 | or when this many thinking blocks became eligible |
+| `batchTokens` | 6000 | advance only when at least this much can be elided in one move |
+| `thinkBatchSteps` | 4 | or when this many thinking blocks became eligible at once |
 | `protectLatestReadTokens` | 12000 | budget for keeping the latest read per path |
 | `stubHeadChars` | 400 | a result citation keeps up to this many leading chars |
 | `stubTailChars` | 400 | …and up to this many trailing chars |
@@ -218,10 +224,109 @@ back to the default.
 | `scratchLimitChars` | 1500 | hard cap for the session pin |
 | `charsPerToken` | 3.35 | scales the messages after the newest provider-reported usage; timing only, so it no longer needs calibrating |
 | `cacheMode` | off | how often the elision boundary may move: `off`, `lagged`, `frozen` |
-| `cacheLagSteps` | 8 | `lagged`: wait this many assistant steps between advances (minimum 1) |
-| `maxPromptTokens` | unset | absolute start threshold in real tokens; wins over `startAtFraction` |
-| `maxHardTokens` | unset | absolute high-water threshold in real tokens; wins over `highWaterFraction` |
+| `cacheLagSteps` | 8 | `lagged`: minimum assistant steps between two advances — a brake that can only make pruning rarer, never sooner (minimum 1) |
+| `maxPromptTokens` | unset | absolute start line in real tokens; wins over `startAtFraction`. Converted to a fraction of the window, so the same number is a different share of every model, and it is never a cap |
+| `maxHardTokens` | unset | absolute high-water line in real tokens; wins over `highWaterFraction` |
 | `modelOverrides` | unset | per-model settings, keyed `"<provider>/<modelId>"` |
+
+### What actually happens on a request
+
+The keys above are easier to set once the order they are consulted in is
+explicit. Every request is tested against the same gates, and **the first three
+all have to let it through before a fourth does any eliding** (`plan.ts`):
+
+```text
+1. effective size >= startAtFraction x
+   window (already-elided savings
+   discounted)?                              no  -> send the prompt unchanged
+                                             yes -> 2
+2. cacheHolds(): inside a `lagged` cooldown
+   or a `frozen` lock?                       yes -> send the prompt unchanged
+                                             no  -> 3
+3. batch gate: >= batchTokens eligible,
+   or >= thinkBatchSteps thinking blocks,
+   or (above highWaterFraction and
+       anything at all is eligible)?         no  -> send the prompt unchanged
+                                             yes -> 4
+4. elide in one batch: thinking older than
+   keepThinkingSteps, results older than
+   keepRecentSteps, arguments over argMinTokens
+   -- then record advancedAtStep for gate 2
+
+then, only if `squeeze` is true:
+5. still above targetFraction x window ? -> elide further, past the
+   age lines and into protected results, until under it
+```
+
+Two consequences are worth internalising, because both are counter-intuitive
+and both produce "my threshold is not being respected" reports.
+
+**A threshold is a start line, never a cap.** `startAtFraction` and
+`maxPromptTokens` say *when the plan may begin*, not *how large the prompt may
+grow*. The only ceiling in the extension is `targetFraction`, and it is inert
+unless `squeeze` is true. So a config of `maxPromptTokens: 32000` with
+`squeeze: false` on a 1,048,576-token window means "start tidying once the
+prompt passes 32000 tokens — and then allow it to grow to the whole window",
+which is very likely not what was meant. On that window 32000 tokens is **3%**
+of the room available; the plan will cross it early and then have nothing left
+to do, because the default `targetFraction` of 0.6 puts the only real ceiling
+at 629,145 tokens. The prompt then grows until Pi's own compaction fires, or
+until the session ends — with the plan sitting idle in the `batch gate` the
+whole way, which looks exactly like a broken extension and is in fact the
+documented behaviour of those two keys.
+
+To make an absolute figure an actual ceiling, all three keys have to agree:
+
+```json
+{
+  "maxPromptTokens": 32000,
+  "squeeze": true,
+  "modelOverrides": {
+    "newapi/deepseek-v4.1-flash": { "targetFraction": 0.0305 }
+  }
+}
+```
+
+`targetFraction` is the ceiling as a fraction of that model's window
+(`32000 / 1048576 = 0.0305`), and `squeeze: true` is what gives it force.
+Note the cost before reaching for this: keeping a 1M-token model under 32k
+means the boundary moves on nearly every request, which is the opposite of what
+the caching keys below exist to buy. On a very large window, "hold a tight
+absolute budget" and "keep the prefix cache warm" are close to mutually
+exclusive; pick which one the deployment actually needs.
+
+**Eligible is not the same as done.** Crossing the start line only starts the
+counter. Between two advances the prompt normally grows, because gate 3 waits
+for `batchTokens` to accumulate and gate 2 forces the wait in `lagged` mode.
+The context curve is therefore a staircase — grow, elide in a batch, grow
+again — not a line held at the threshold. Item 6 under
+[What it does](#what-it-does) is the design reason: between advances the
+serialized prefix is byte-identical, which is the whole point of the batch.
+A sawtooth that peaks well above the start line is the plan working, not
+failing.
+
+### `cacheLagSteps` and prefix caching
+
+`cacheLagSteps` (default 8, only read when `cacheMode` is `lagged`) is the
+minimum number of assistant steps between two advances. It is a **brake**: it
+can only make pruning rarer, never sooner, and no value of it can relax a tier
+back upwards.
+
+It exists because a prompt cache is a cache of the *common prefix*, and this
+extension elides by rewriting **early** messages. Each advance therefore
+invalidates the whole cached prefix — the miss is exactly the tokens that were
+already there, so the smarter the server's cache the more an over-eager plan
+throws away (vLLM `--enable-prefix-caching`, llama.cpp's KV cache). The lag
+trades a little peak context for fewer full re-prefills of the session.
+
+Two things it is *not*: it does not bound the prompt size (only
+`targetFraction` + `squeeze` do that), and it is not what holds the prompt back
+in most sessions. Whenever gate 3 is the binding constraint, `cacheLagSteps: 1`
+and `cacheLagSteps: 8` produce byte-identical plans — the lag never gets a
+chance to fire because the plan cannot accumulate `batchTokens` quickly enough
+to want to advance during the cooldown. Raise the lag only after `/ctx` or
+`CONTEXT_BUDGET_LOG` shows advances actually being blocked by gate 2; leaving
+it at the default is harmless when gate 3 dominates, which it usually does.
 
 `keepThinkingSteps` is the one knob with a measured quality trade-off:
 published multi-turn tool-calling benchmarks give Qwen3-class models a few
@@ -320,7 +425,24 @@ node search-hitrate.ts               # defaults to ~/.pi/agent/sessions
 
 - `/ctx` prints the provider-reported usage, plugin-sent estimate vs the cap,
   the cap against Pi's compaction threshold, the pin, the plan generation,
-  archive counts by kind and the spill directory.
+  archive counts by kind and the spill directory. The last-request line ends
+  with `N tokens waiting for next batch` — that is gate 3 reporting how far
+  the plan is from its `batchTokens` trigger. A number that keeps growing while
+  nothing is elided means the prompt is over the start line and under the
+  batch trigger, which is the normal staircase, not a fault.
+- **A threshold that looks ignored is usually a start line doing its job.** If
+  the prompt passes `maxPromptTokens` and then keeps growing, check whether
+  `squeeze` is true and what `targetFraction` resolves to *for that model*
+  (`/ctx` prints the resolved cap). Both are needed for an absolute ceiling;
+  without them there is no ceiling to exceed. Remember that the absolute
+  thresholds are converted to a fraction of the window, so the same
+  `maxPromptTokens` is a far smaller share of a 1M window than of a 32k one.
+- **`modelOverrides` matches `"<provider>/<modelId>"` as an exact string** and
+  falls back to the global config silently when nothing matches — no warning,
+  no log line. A key for a provider Pi does not have (a misspelling, or a model
+  renamed upstream) is inert. Verify a key against `~/.pi/agent/models.json`
+  rather than against memory; a typo here is indistinguishable from a setting
+  that has no effect.
 - The footer shows `ctx 48% −Nk gG` once something is elided (`G` is the plan
   generation; each increment moved the prefix-cache miss point once).
 - `CONTEXT_BUDGET_LOG=<file>` appends one JSON line per request with
@@ -377,7 +499,7 @@ Forked from
   over recorded sessions (fitted per session, so the system prompt lands in the
   intercept). The upstream default of `3.3` turned out to be close; this fork
   briefly shipped `4.49`, which came from a flawed measurement and has been
-  reverted — see the note under [Configuration](#configuration).
+  reverted — see the note under [Configure](#configure).
 - **Per-model `charsPerToken` is a real effect**, not noise: `deepseek-v4-flash`
   and `gpt-5.6-luna` measure around `3.0`, `glm-5.3-flash` around `3.6`, and
   `deepseek-v4.1-flash` around `6.5`. Set it per model when the timing matters.

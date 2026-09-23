@@ -1,7 +1,7 @@
 // What a compaction should discard, and whether it is worth running at all. Pure; no Pi imports.
 import { tokensToFree, type Budget } from "./budget.ts";
 import { estimate, type Config } from "./config.ts";
-import { boundaryStart, indexOfEntry, recut, spanMessages, type Entry } from "./cut.ts";
+import { applyContextEdits, boundaryStart, indexOfEntry, recut, spanMessages, type Entry } from "./cut.ts";
 import { estimateMessages, type Msg } from "./messages.ts";
 import { deterministicSummary, type CompactInput, type SummaryState } from "./summary.ts";
 
@@ -26,6 +26,10 @@ export interface Span {
 // whole window; then the cut lands at the head of the branch and the compaction discards almost
 // nothing. When Pi's span is smaller than what has to be freed, take a cut sized to the window.
 export function spanFor(prep: Preparation, entries: Entry[], budget: Budget, need: number, cfg: Config): Span {
+  // Resolve Pi 0.87 context_edit entries first: the span and every token it is priced at must
+  // describe what the context actually holds — an omitted message costs nothing, a replaced one
+  // costs its replacement. No edits on the branch means the same array, so nothing else changes.
+  entries = applyContextEdits(entries);
   const own: Span = {
     firstKeptEntryId: prep.firstKeptEntryId,
     messagesToSummarize: prep.messagesToSummarize ?? [],

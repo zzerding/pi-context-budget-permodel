@@ -1,10 +1,12 @@
 // Picking a compaction cut point when Pi's own frees nothing. Pure; no Pi imports.
 //
-// Pi's cut keeps keepRecentTokens of the tail. That setting is global, so a value chosen for a
-// 262144-token model — or Pi's own default of 20000 — can exceed a small model's whole window, and
-// then the cut lands at the head of the branch and the compaction discards almost nothing. Recut
+// Pi's cut keeps keepRecentTokens of the tail. A value chosen for a 262144-token model — or Pi's
+// own default of 20000 — can exceed a small model's whole window, and then the cut lands at the
+// head of the branch and the compaction discards almost nothing. Recut
 // with a budget derived from the window instead, following Pi's rule for a valid cut: any
 // context-visible message except a tool result, which has to stay with the call it answers.
+// A branch carrying Pi 0.87 context_edit entries resolves them first (applyContextEdits), so a
+// cut point and every token count describe what the context actually holds now.
 import { estimate, type Config } from "./config.ts";
 import { textOf, type Msg } from "./messages.ts";
 
@@ -13,6 +15,8 @@ export interface Entry {
   id?: string;
   message?: Msg;
   firstKeptEntryId?: string; // compaction entries only
+  targetId?: string;         // context_edit entries only: the message entry being rewritten
+  replacement?: { content: Msg["content"] } | null; // context_edit entries only
 }
 
 export interface Cut {
@@ -74,4 +78,25 @@ export function recut(entries: Entry[], afterIndex: number, keepTokens: number, 
     if (id && isCutPoint(entries[i])) return { id, index: i };
   }
   return undefined;
+}
+
+// Resolve the context_edit entries along a branch, in path order, the last edit per targetId
+// winning. An edit whose target is not a message on this branch is ignored (it points at another
+// branch); a null replacement drops the target from the context, a non-null one replaces only its
+// content. Edit entries themselves carry no message and are removed. Returns the same array when
+// the branch carries no edits, so the common path keeps its identity and behaviour.
+export function applyContextEdits(entries: Entry[]): Entry[] {
+  if (!entries.some((e) => e.type === "context_edit")) return entries;
+  const edit = new Map<string, Entry["replacement"]>();
+  for (const e of entries) {
+    if (e.type === "context_edit" && e.targetId) edit.set(e.targetId, e.replacement ?? null);
+  }
+  const out: Entry[] = [];
+  for (const e of entries) {
+    if (e.type === "context_edit") continue;
+    const repl = e.id ? edit.get(e.id) : undefined;
+    if (repl === null) continue;
+    out.push(repl && e.message ? { ...e, message: { ...e.message, content: repl.content } } : e);
+  }
+  return out;
 }

@@ -3,6 +3,7 @@
 // usage: node replay.ts <session.jsonl> [contextWindow] [reserveTokens] [baseTokens]
 import { readFileSync } from "node:fs";
 import { DEFAULTS, PI_COMPACTION_DEFAULTS, budgetFor, newState, plan } from "./plan.ts";
+import { applyContextEdits } from "./cut.ts";
 
 const file = process.argv[2];
 const window = Number(process.argv[3] ?? 131072);
@@ -18,7 +19,10 @@ let cur = rows.filter((r) => r.id).at(-1);
 const path: any[] = [];
 while (cur) { path.push(cur); cur = byId.get(cur.parentId); }
 path.reverse();
-const msgs = path.filter((e) => e.type === "message").map((e) => e.message);
+// Pi 0.87 context_edit entries rewrite or drop a target message along the path, latest edit per
+// targetId winning; an edit aimed at another branch is ignored. Edit entries themselves carry no
+// message, so they disappear here either way.
+const msgs = applyContextEdits(path).flatMap((e) => (e.type === "message" && e.message ? [e.message] : []));
 
 const state = newState();
 let sumBefore = 0, sumAfter = 0, advances = 0, peakBefore = 0, peakAfter = 0, requests = 0;

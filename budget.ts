@@ -1,8 +1,9 @@
 // Where this plan's budget has to sit relative to Pi's own compaction threshold. Pure; no Pi imports.
 //
 // Pi compacts when the prompt passes contextWindow - reserveTokens, and its cut point keeps
-// keepRecentTokens of the tail (core/compaction: shouldCompact, findCutPoint). Both are global
-// settings — the same numbers for every model, with no per-model override. On a 262144-token
+// keepRecentTokens of the tail (core/compaction: shouldCompact, findCutPoint). Both fields accept
+// a per-model override (Pi 0.86+ compaction.modelOverrides), resolved field by field: the model's
+// override wins over the ordinary setting, which wins over Pi's default. On a 262144-token
 // window the default 16384 reserve puts the threshold at 94%, far above this extension's 60%
 // target, and the two never meet. On a 32768-token model the same reserve puts it at 50%, below
 // the target: Pi then compacts on every request however well the plan is doing. If
@@ -23,14 +24,65 @@ const MAX_HEADROOM = 4096;        // tokens left between the plan's cap and Pi's
 const MIN_TARGET_FRACTION = 0.2;  // never aim below this, however little reserve leaves us
 const MIN_KEEP_TOKENS = 1000;
 
-export function piCompactionFrom(raw: unknown): PiCompaction {
-  const block = (raw as { compaction?: Record<string, unknown> } | undefined)?.compaction;
-  const num = (v: unknown, dflt: number) => (typeof v === "number" && v > 0 ? v : dflt);
+// The compaction block of a settings.json, before any per-model resolution. modelOverrides is
+// keyed by "provider/id" and may override reserveTokens and keepRecentTokens per model; enabled
+// stays global (Pi has no per-model switch for compaction itself).
+type CompactionBlock = Record<string, unknown>;
+
+const asBlock = (v: unknown): CompactionBlock | undefined =>
+  v && typeof v === "object" && !Array.isArray(v) ? (v as CompactionBlock) : undefined;
+
+const token = (v: unknown, dflt: number): number => (typeof v === "number" && v >= 0 ? v : dflt);
+
+// Merge Pi's global and project compaction blocks the way SettingsManager's deepMergeSettings
+// does: plain objects merge recursively, everything else is replaced — so modelOverrides merge
+// key by key and each model entry merges field by field. A global entry for a model keeps
+// working when the project file only sets one of its tokens, and a global model entry survives
+// a project file that only sets the ordinary (model-less) fields.
+export function mergePiCompaction(globals: unknown, project: unknown): CompactionBlock | undefined {
+  const g = asBlock(globals);
+  const p = asBlock(project);
+  if (!g) return p;
+  if (!p) return g;
+  const merged: CompactionBlock = { ...g, ...p };
+  const gOver = asBlock(g.modelOverrides);
+  const pOver = asBlock(p.modelOverrides);
+  if (gOver || pOver) merged.modelOverrides = mergeOverrides(gOver, pOver);
+  return merged;
+}
+
+// modelOverrides merge key by key, and each model entry field by field, the same recursion
+// deepMergeSettings applies: the project's entry keeps the global entry's other token.
+function mergeOverrides(g: CompactionBlock | undefined, p: CompactionBlock | undefined): CompactionBlock {
+  if (!g) return p ?? {};
+  if (!p) return g;
+  const merged: CompactionBlock = { ...g };
+  for (const [key, value] of Object.entries(p)) {
+    const base = asBlock(merged[key]);
+    const next = asBlock(value);
+    merged[key] = base && next ? { ...base, ...next } : value;
+  }
+  return merged;
+}
+
+// The compaction settings that apply to one model, resolved field by field the way Pi's
+// getCompactionTokenSetting does: modelOverrides["provider/id"][field] ?? compaction[field] ??
+// Pi's default. A value that is not a non-negative number falls back at its own level, so a
+// typo'd override cannot hide a valid ordinary setting. An absent model resolves to the ordinary
+// fields everywhere, which is exactly the pre-modelOverrides behaviour.
+export function piCompactionFor(raw: unknown, modelRef: string | undefined): PiCompaction {
+  const block = asBlock(raw) ?? {};
+  const override = (modelRef ? asBlock(asBlock(block.modelOverrides)?.[modelRef]) : undefined) ?? {};
   return {
-    enabled: typeof block?.enabled === "boolean" ? block.enabled : PI_COMPACTION_DEFAULTS.enabled,
-    reserveTokens: num(block?.reserveTokens, PI_COMPACTION_DEFAULTS.reserveTokens),
-    keepRecentTokens: num(block?.keepRecentTokens, PI_COMPACTION_DEFAULTS.keepRecentTokens),
+    enabled: typeof block.enabled === "boolean" ? block.enabled : PI_COMPACTION_DEFAULTS.enabled,
+    reserveTokens: token(override.reserveTokens, token(block.reserveTokens, PI_COMPACTION_DEFAULTS.reserveTokens)),
+    keepRecentTokens: token(override.keepRecentTokens, token(block.keepRecentTokens, PI_COMPACTION_DEFAULTS.keepRecentTokens)),
   };
+}
+
+// The settings-wrapper form of piCompactionFor with no model: global settings only.
+export function piCompactionFrom(raw: unknown): PiCompaction {
+  return piCompactionFor((raw as { compaction?: unknown } | undefined)?.compaction, undefined);
 }
 
 // The prompt size above which Pi runs a compaction. Infinity when Pi's compaction is off.

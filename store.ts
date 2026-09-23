@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { piCompactionFrom, type PiCompaction } from "./budget.ts";
+import { mergePiCompaction } from "./budget.ts";
 import { DEFAULTS, mergeConfig, type Config } from "./config.ts";
 import type { Elided, Kind, Spill, Tier } from "./archive.ts";
 import { emptyScratch } from "./pin.ts";
@@ -33,12 +33,13 @@ export function loadConfig(): Config {
 }
 
 // Pi's compaction block: global settings.json with the project's .pi/settings.json merged over it,
-// the same precedence Pi's SettingsManager applies.
-export function loadPiCompaction(cwd?: string): PiCompaction {
+// the same precedence Pi's SettingsManager applies — modelOverrides merged key by key like the
+// rest of the settings. Raw, unresolved: resolve one model's effective numbers with
+// piCompactionFor(block, modelRef).
+export function loadPiCompaction(cwd?: string): Record<string, unknown> | undefined {
   const globals = readJson(join(agentDir(), "settings.json"))?.compaction;
   const project = cwd ? readJson(join(cwd, ".pi", "settings.json"))?.compaction : undefined;
-  const merged = { ...(globals as object | undefined), ...(project as object | undefined) };
-  return piCompactionFrom({ compaction: merged });
+  return mergePiCompaction(globals, project);
 }
 
 export function sessionDir(sessionId: string): string {
