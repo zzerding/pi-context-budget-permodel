@@ -22,6 +22,8 @@
   "pin": false,
   "interceptCompact": true,
   "targetFraction": 0.6,
+  "cacheMode": "off",
+  "cacheLagSteps": 8,
   "emergencyKeepSteps": 2,
   "emergencyKeepThinking": 1,
   "scratchLimitChars": 1500
